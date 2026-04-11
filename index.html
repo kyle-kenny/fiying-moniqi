@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AI 隔空御物：3D 无人机 (FBX 专属版)</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.0/umd/index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+
+  <style>
+    body {
+      margin: 0; display: flex; flex-direction: column; align-items: center;
+      background-color: #1a1a1a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: white; overflow-x: hidden;
+    }
+    
+    h2 { font-size: 1.2rem; text-align: center; margin: 15px 0 10px 0; text-shadow: 0 0 10px rgba(0, 255, 255, 0.5); }
+    
+    #start-btn {
+      margin-top: 20px; padding: 15px 30px; font-size: 18px; font-weight: bold;
+      color: #1a1a1a; background-color: #00ffcc; border: none; border-radius: 8px;
+      cursor: pointer; box-shadow: 0 0 15px rgba(0, 255, 204, 0.5); transition: transform 0.1s;
+    }
+    #start-btn:active { transform: scale(0.95); }
+    #controls-container { display: flex; justify-content: center; width: 100%; margin-bottom: 10px; }
+    
+    /* 容器设为相对定位，用来重叠 2D视频画布 和 3D模型画布 */
+    #video-container {
+      width: 95%; max-width: 640px; height: 480px; position: relative; background: #000;
+      border-radius: 12px; box-sizing: border-box; box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+      display: none; overflow: hidden;
+    }
+    video { display: none; }
+    
+    /* 底层：画视频和红点绿线 */
+    #output_canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+    /* 顶层：透明背景，画 3D 无人机 */
+    #three_canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+    
+    #ui-panel {
+      width: 95%; max-width: 640px; margin-top: 15px; background: #2c2c2c;
+      padding: 15px 20px; border-radius: 12px; box-sizing: border-box;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: none;
+    }
+    
+    .status {
+      font-size: 1.2rem; font-weight: bold; color: #00ffcc; margin-bottom: 15px;
+      padding: 10px; background: rgba(0, 255, 204, 0.1); border-radius: 8px; text-align: center;
+    }
+    
+    .legend {
+      display: flex; justify-content: space-between; flex-wrap: wrap;
+      font-size: 13px; color: #ccc; line-height: 1.8; text-align: left;
+    }
+    .legend div.column { width: 48%; }
+    .legend b.title { color: #00ffcc; font-size: 15px; margin-bottom: 5px; display: block; }
+    .legend b { color: white; }
+    
+    .warning-note { margin-top: 15px; font-size: 12px; color: #ffaa00; text-align: center; font-weight: bold; }
+
+    @media (max-width: 500px) { .legend div.column { width: 100%; margin-bottom: 10px; } }
+  </style>
+</head>
+<body>
+
+  <h2>🚁 3D 隔空御物：无人机系统</h2>
+
+  <div id="controls-container">
+    <button id="start-btn">启动视觉引擎 (点此授权)</button>
+  </div>
+
+  <div id="video-container">
+    <video id="input_video" width="640" height="480" autoplay playsinline></video>
+    <canvas id="output_canvas" width="640" height="480"></canvas>
+    <canvas id="three_canvas" width="640" height="480"></canvas>
+  </div>
+
+  <div id="ui-panel">
+    <div id="status_text" class="status">👀 正在加载 AI 模型...</div>
+    <div class="legend">
+      <div class="column">
+        <b class="title">基础控制：</b>
+        🖐️ <b>手心朝前张开：</b> 起飞 / 悬停<br>
+        ✊ <b>握紧拳头 (0指)：</b> 降落 / 急停
+      </div>
+      <div class="column">
+        <b class="title">高级特技 & 方向：</b>
+        ☝️ <b>伸食指：</b> 控制上下左右飞行<br>
+        🫲 <b>手背朝前张开：</b> 触发 360° 翻滚
+      </div>
+    </div>
+    <div class="warning-note">⚠️ 提示：初始化摄像头连接需要等待1-3分钟！</div>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('input_video');
+    const canvas2d = document.getElementById('output_canvas');
+    const ctx2d = canvas2d.getContext('2d');
+    const canvas3d = document.getElementById('three_canvas');
+    const statusText = document.getElementById('status_text');
+
+    // ==========================================
+    // 1. 初始化 Three.js 3D 环境
+    // ==========================================
+    const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, alpha: true, antialias: true });
+    renderer.setSize(640, 480);
+    const scene = new THREE.Scene();
+    
+    // 使用正交相机完美贴合 2D 视频的物理坐标系
+    const camera = new THREE.OrthographicCamera(0, 640, 0, 480, -1000, 1000);
+    camera.position.z = 500;
+
+    // 强化光照，让 FBX 模型的材质更好看
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    directionalLight.position.set(200, 500, 300);
+    scene.add(directionalLight);
+
+    // ==========================================
+    // 2. 加载 FBX 自定义模型
+    // ==========================================
+    let drone3DModel = null;
+    let propellers = []; // 如果你想让模型的螺旋桨转动，存在这里
+
+    const loader = new THREE.FBXLoader();
+    // ⚠️ 确保你的文件名为 my_drone.fbx 并放在同一个文件夹
+    loader.load('my_drone.fbx', function (object) {
+      drone3DModel = object;
+      
+      // ⚠️ 极其重要：FBX 模型往往非常巨大，这里缩小为原来的 0.05 倍 (具体根据你的模型自行微调)
+      drone3DModel.scale.set(0.05, 0.05, 0.05); 
+      
+      drone3DModel.traverse(function (child) {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+          // 若你的模型中螺旋桨名称包含 "Propeller"，会自动抓取出来做旋转动画
+          if (child.name.toLowerCase().includes("propeller")) {
+             propellers.push(child);
+          }
+        }
+      });
+      scene.add(drone3DModel);
+      console.log("FBX 模型加载成功！");
+    }, undefined, function (error) {
+      console.error('FBX 模型加载失败:', error);
+    });
+
+    // ==========================================
+    // 3. 手势识别与物理引擎逻辑
+    // ==========================================
+    let dronePhys = { x: 320, y: 440, vx: 0, vy: 0, state: 'landed', flipAngle: 0, isFlipping: false };
+    const maxSpeed = 9, acceleration = 0.9, friction = 0.85;
+    let currentGesture = "NONE", lastVideoFrame = null, currentLandmarks = null;
+
+    function detectGesture(landmarks) {
+      const tips = [8, 12, 16, 20], pips = [6, 10, 14, 18];
+      let extendedFingers = 0, isIndexExtended = false;
+
+      for (let i = 0; i < 4; i++) {
+        let tipDist = Math.hypot(landmarks[tips[i]].x - landmarks[0].x, landmarks[tips[i]].y - landmarks[0].y);
+        let pipDist = Math.hypot(landmarks[pips[i]].x - landmarks[0].x, landmarks[pips[i]].y - landmarks[0].y);
+        if (tipDist > pipDist) { extendedFingers++; if (i === 0) isIndexExtended = true; }
+      }
+
+      let isBackOfHand = (landmarks[5].z < landmarks[0].z - 0.05 && extendedFingers >= 4);
+
+      if (extendedFingers === 0) return { cmd: "LAND", text: "✊ 已识别：握紧拳头 (LAND)" };
+      if (extendedFingers >= 4) {
+        return isBackOfHand ? { cmd: "FLIP", text: "🫲 已识别：手背朝前 (FLIP ROLL)" } : { cmd: "HOVER", text: "🖐️ 已识别：手心张开 (HOVERING)" };
+      }
+      if (extendedFingers === 1 && isIndexExtended) {
+        let dx = landmarks[8].x - landmarks[5].x, dy = landmarks[8].y - landmarks[5].y;
+        if (Math.abs(dy) > Math.abs(dx)) return dy < 0 ? { cmd: "UP", text: "☝️ 向上升 (ASCEND)" } : { cmd: "DOWN", text: "👇 向下飞 (DESCEND)" };
+        return dx < 0 ? { cmd: "RIGHT", text: "👉 向右飞 (RIGHT)" } : { cmd: "LEFT", text: "👈 向左飞 (LEFT)" };
+      }
+      return { cmd: "NONE", text: "👀 请将手移入镜头..." };
+    }
+
+    function onResults(results) {
+      lastVideoFrame = results.image;
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        currentLandmarks = results.multiHandLandmarks[0];
+        let gestureData = detectGesture(currentLandmarks);
+        currentGesture = gestureData.cmd;
+        
+        if (gestureData.cmd === "LAND") statusText.style.color = "#ff4444";
+        else if (gestureData.cmd === "HOVER" || gestureData.cmd === "FLIP") statusText.style.color = "#00ffcc";
+        else statusText.style.color = "#ffff00";
+        statusText.innerHTML = gestureData.text;
+      } else {
+        currentLandmarks = null; currentGesture = "NONE";
+        statusText.innerHTML = "👀 未检测到手势，无人机待命...";
+        statusText.style.color = "#aaaaaa";
+      }
+    }
+
+    // ==========================================
+    // 4. 游戏主循环渲染
+    // ==========================================
+    function gameLoop() {
+      // --- A. 绘制底层的 2D 视频和红点绿线 ---
+      ctx2d.clearRect(0, 0, canvas2d.width, canvas2d.height);
+      if (lastVideoFrame) {
+        ctx2d.save();
+        ctx2d.translate(canvas2d.width, 0); ctx2d.scale(-1, 1);
+        ctx2d.drawImage(lastVideoFrame, 0, 0, canvas2d.width, canvas2d.height);
+        if (currentLandmarks) {
+          drawConnectors(ctx2d, currentLandmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
+          drawLandmarks(ctx2d, currentLandmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
+        }
+        ctx2d.restore();
+      }
+
+      // --- B. 更新物理状态 ---
+      if (['HOVER', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'FLIP'].includes(currentGesture)) dronePhys.state = 'flying';
+      else if (currentGesture === 'LAND') dronePhys.state = 'landed';
+
+      if (currentGesture === 'FLIP' && !dronePhys.isFlipping && dronePhys.y < canvas2d.height - 100) dronePhys.isFlipping = true;
+      if (dronePhys.isFlipping) {
+        dronePhys.flipAngle += 0.35; 
+        if (dronePhys.flipAngle >= Math.PI * 2) { dronePhys.flipAngle = 0; dronePhys.isFlipping = false; }
+      }
+
+      if (dronePhys.state === 'flying') {
+        if (currentGesture === 'UP') dronePhys.vy -= acceleration;
+        if (currentGesture === 'DOWN') dronePhys.vy += acceleration;
+        if (currentGesture === 'LEFT') dronePhys.vx -= acceleration;
+        if (currentGesture === 'RIGHT') dronePhys.vx += acceleration;
+        if (dronePhys.isFlipping) dronePhys.vy -= acceleration * 0.5; 
+      } else { dronePhys.vy += 1; }
+
+      dronePhys.vx *= friction; dronePhys.vy *= friction;
+      dronePhys.vx = Math.max(-maxSpeed, Math.min(maxSpeed, dronePhys.vx));
+      dronePhys.vy = Math.max(-maxSpeed, Math.min(maxSpeed, dronePhys.vy));
+      dronePhys.x += dronePhys.vx; dronePhys.y += dronePhys.vy;
+
+      const groundY = canvas2d.height - 50;
+      if (dronePhys.x < 40) { dronePhys.x = 40; dronePhys.vx = 0; }
+      if (dronePhys.x > canvas2d.width - 40) { dronePhys.x = canvas2d.width - 40; dronePhys.vx = 0; }
+      if (dronePhys.y < 40) { dronePhys.y = 40; dronePhys.vy = 0; }
+      if (dronePhys.y > groundY) { dronePhys.y = groundY; dronePhys.vy = 0; if(dronePhys.state === 'landed') dronePhys.vx *= 0.5; }
+
+      // --- C. 同步给 3D 模型 ---
+      if (drone3DModel) {
+        drone3DModel.position.x = dronePhys.x;
+        drone3DModel.position.y = canvas2d.height - dronePhys.y; // 反转 Y 轴坐标
+        
+        // 运动惯性倾斜 (Z轴) + 翻滚特技 (X轴)
+        drone3DModel.rotation.z = dronePhys.vx * -0.05; 
+        drone3DModel.rotation.x = dronePhys.flipAngle; 
+
+        // 如果模型中成功识别了螺旋桨，让它们旋转
+        if (dronePhys.state === 'flying') {
+          propellers.forEach((prop, index) => {
+            prop.rotation.y += (index % 2 === 0 ? 0.8 : -0.8);
+          });
+        }
+      }
+
+      // 渲染 3D 画面
+      renderer.render(scene, camera);
+      requestAnimationFrame(gameLoop);
+    }
+
+    // 启动系统
+    document.getElementById('start-btn').addEventListener('click', () => {
+      document.getElementById('controls-container').style.display = 'none';
+      document.getElementById('video-container').style.display = 'block';
+      document.getElementById('ui-panel').style.display = 'block';
+
+      const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+      hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+      hands.onResults(onResults);
+
+      const cameraObj = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 640, height: 480, facingMode: "user" 
+      });
+      cameraObj.start()
+        .then(() => requestAnimationFrame(gameLoop))
+        .catch(err => { statusText.innerHTML = "⚠️ 无法开启摄像头，请检查权限！"; statusText.style.color = "#ff4444"; });
+    });
+  </script>
+</body>
+</html>
