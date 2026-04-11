@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>御剑归宗-无人机</title>
+  <title>万剑归宗-无人机</title>
   
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
@@ -39,7 +39,7 @@
 </head>
 <body>
 
-  <h2>🚁 手势控制无人机系统</h2>
+  <h2>🚁 3D 隔空御物：经典手势指令版</h2>
 
   <div id="controls-container">
     <button id="start-btn">启动视觉引擎</button>
@@ -61,11 +61,11 @@
       </div>
       <div class="column">
         <b class="title">特技 & 方向：</b>
-        ☝️ <b>食指指向上/下/左/右：</b> 上升/下降/向左/向右<br>
+        ☝️ <b>食指指向上/下/左/右：</b> 无人机上升/下降/向左/向右<br>
         🫲 <b>瞬间翻转手腕：</b> 触发单次侧方翻滚
       </div>
     </div>
-    <div class="warning-note">⚠️ 提示：初始化摄像头连接需要等待 1-3 分钟！</div>
+    <div class="warning-note">⚠️ 提示：初始化摄像头连接需要等待1-3分钟！</div>
   </div>
 
   <script>
@@ -79,9 +79,8 @@
     renderer.setSize(640, 480);
     const scene = new THREE.Scene();
     
-    // 【核心修复 1】：恢复标准的 3D 相机视角（Y轴向上为正）防止模型被背面剔除而隐形
-    // 参数：left:0, right:640, top:480, bottom:0
-    const camera = new THREE.OrthographicCamera(0, 640, 480, 0, -1000, 1000);
+    // 正交相机参数：左, 右, 上, 下, 近, 远
+    const camera = new THREE.OrthographicCamera(0, 640, 0, 480, -1000, 1000);
     camera.position.z = 500;
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
@@ -145,7 +144,7 @@
         let dx = landmarks[8].x - landmarks[5].x; 
         let dy = landmarks[8].y - landmarks[5].y;
         if (Math.abs(dy) > Math.abs(dx)) {
-          // dy < 0 说明指尖在屏幕里的 Y 坐标比指根小，物理意义是“指尖朝上”
+          // dy < 0 说明指尖在物理画面中的 Y 坐标比指根小，也就是指尖朝上
           return dy < 0 ? { cmd: "UP", text: "☝️ 已识别：指尖朝上 (上升)" } : { cmd: "DOWN", text: "👇 已识别：指尖朝下 (下降)" };
         } else {
           return dx < 0 ? { cmd: "RIGHT", text: "👉 向右飞" } : { cmd: "LEFT", text: "👈 向左飞" };
@@ -188,6 +187,7 @@
       if (['HOVER', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'FLIP_LEFT', 'FLIP_RIGHT'].includes(currentGesture)) dronePhys.state = 'flying';
       else if (currentGesture === 'LAND') dronePhys.state = 'landed';
 
+      // 单次特技冷却逻辑
       if ((currentGesture === 'FLIP_LEFT' || currentGesture === 'FLIP_RIGHT') 
           && !dronePhys.isFlipping && dronePhys.canTriggerNewFlip && dronePhys.y < canvas2d.height - 150) {
         dronePhys.isFlipping = true;
@@ -205,6 +205,7 @@
       }
 
       if (dronePhys.state === 'flying') {
+        // 物理逻辑：减去加速度 = 坐标数值变小 = 靠近屏幕上方 (0)
         if (currentGesture === 'UP') dronePhys.vy -= acceleration;
         if (currentGesture === 'DOWN') dronePhys.vy += acceleration;
         if (currentGesture === 'LEFT') dronePhys.vx -= acceleration;
@@ -227,10 +228,10 @@
 
       if (drone3DModel) {
         drone3DModel.position.x = dronePhys.x;
-        // 【核心修复 2】：使用 480 减去物理高度，将坐标完美映射到 3D 屏幕上
-        // 这样手往上指 -> 物理 Y 减小 -> 模型渲染位置上升，不再反向！
-        drone3DModel.position.y = 480 - dronePhys.y; 
+        // 【核心修复：直接使用物理 Y 坐标，去除了会导致方向倒置的减法】
+        drone3DModel.position.y = dronePhys.y; 
         
+        // 只使用纯净的滚转 (Z轴) 侧翻
         drone3DModel.rotation.z = (dronePhys.vx * -0.05) + (dronePhys.flipAngle * dronePhys.flipDirection); 
         drone3DModel.rotation.x = 0;
 
